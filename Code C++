@@ -1,0 +1,149 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <AltSoftSerial.h>
+#include <SoftwareSerial.h>
+#include <DFRobotDFPlayerMini.h>
+#include "SDS011.h"
+
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+AltSoftSerial dfSerial;
+SoftwareSerial sdsSerial(10, 11);
+DFRobotDFPlayerMini myDFPlayer;
+SDS011 mySensor;
+
+unsigned long lastPlayTime = 0;
+const unsigned long interval = 60000; // 1 menit
+const unsigned long sensorInterval = 5000; // 5 detik
+unsigned long lastSensorReadTime = 0;
+int audioFile = 1;
+
+bool playedImmediateWarning = false; // Flag untuk deteksi "BERBAHAYA" langsung
+
+void setup() {
+  Serial.begin(9600);
+  dfSerial.begin(9600);
+  sdsSerial.begin(9600);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Inisialisasi...");
+
+  mySensor.begin(10, 11);
+
+  Serial.println("Menginisialisasi DFPlayer Mini...");
+  lcd.setCursor(0, 1);
+  lcd.print("DFPlayer: ");
+  if (!myDFPlayer.begin(dfSerial)) {
+    Serial.println("Gagal!");
+    lcd.print("GAGAL");
+    while (1);
+  }
+  Serial.println("DFPlayer OK");
+  lcd.print("OK");
+
+  myDFPlayer.volume(20);
+  delay(2000);
+  lcd.clear();
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+  unsigned long remainingMillis = interval - (currentMillis - lastPlayTime);
+
+  if (remainingMillis > interval) {
+    remainingMillis = 0;
+  }
+
+  int remainingSeconds = remainingMillis / 1000;
+  int hours = remainingSeconds / 3600;
+  int minutes = (remainingSeconds % 3600) / 60;
+  int seconds = remainingSeconds % 60;
+
+  char timeStr[10];
+  sprintf(timeStr, "%02d:%02d:%02d", hours, minutes, seconds);
+  int centerPos = (20 - strlen(timeStr)) / 2;
+  lcd.setCursor(centerPos, 3);
+  lcd.print(timeStr);
+  lcd.print("   ");
+
+  if (remainingSeconds > 5 && currentMillis - lastSensorReadTime >= sensorInterval) {
+    float pm25, pm10;
+    int error = mySensor.read(&pm25, &pm10);
+    lastSensorReadTime = currentMillis;
+
+    if (!error) {
+      pm25 += 3; // Koreksi nilai PM2.5 dengan menambahkan 3
+      
+      String kualitas;
+
+      if (pm25 > 250.4 || pm10 > 420) {
+        kualitas = "BERBAHAYA";
+        audioFile = 5;
+
+        if (!playedImmediateWarning) {
+          Serial.println("PERINGATAN: Udara berbahaya! Memutar audio sekarang.");
+          myDFPlayer.play(audioFile);
+          playedImmediateWarning = true;
+          lastPlayTime = millis(); // reset waktu pemutaran normal
+          delay(3000); // delay 30 detik agar tidak memutar ulang langsung
+        }
+
+      } else if (pm25 > 150.5 || pm10 > 351) {
+        kualitas = "SANGAT TIDAK SEHAT";
+        audioFile = 4;
+        playedImmediateWarning = false;
+      } else if (pm25 > 55.5 || pm10 > 151) {
+        kualitas = "TIDAK SEHAT";
+        audioFile = 3;
+        playedImmediateWarning = false;
+      } else if (pm25 > 15.6 || pm10 > 51) {
+        kualitas = "SEDANG";
+        audioFile = 2;
+        playedImmediateWarning = false;
+      } else {
+        kualitas = "BAIK";
+        audioFile = 1;
+        playedImmediateWarning = false;
+      }
+
+      // Tampilkan data di LCD
+      lcd.setCursor(0, 0);
+      lcd.print("PM2.5: ");
+      lcd.print(pm25);
+      lcd.print("ug/m3   ");
+
+      lcd.setCursor(0, 1);
+      lcd.print("PM10 : ");
+      lcd.print(pm10);
+      lcd.print("ug/m3   ");
+
+      lcd.setCursor(0, 2);
+      lcd.print("K: ");
+      lcd.print(kualitas);
+      lcd.print("    ");
+
+      Serial.print("PM2.5: "); Serial.print(pm25);
+      Serial.print(" | PM10: "); Serial.print(pm10);
+      Serial.print(" | Kualitas: "); Serial.println(kualitas);
+    } else {
+      Serial.println("Gagal membaca SDS011");
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Gagal baca SDS011");
+      lcd.setCursor(0, 1);
+      lcd.print("Cek koneksi!");
+    }
+  }
+
+  if (remainingSeconds <= 5) {
+    Serial.println("Menunggu 2 detik sebelum memainkan audio...");
+    delay(2000);
+  }
+
+  if (currentMillis - lastPlayTime >= interval) {
+    Serial.println("Memainkan audio rutin...");
+    myDFPlayer.play(audioFile);
+    lastPlayTime = millis();
+  }
+}
